@@ -5,6 +5,9 @@ on:
   repository_dispatch:
     types: update openwrt toolchain
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -54,13 +57,23 @@ jobs:
 
       - name: Compare Toolchain Hash
         id: hash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           cd $OPENWRT_PATH
           TOOLS_HASH=$(git log -1 --pretty=format:"%h" tools toolchain)
           CACHE_NAME="$SOURCE_REPO-$LITE_BRANCH-$DEVICE_TARGET-cache-$TOOLS_HASH"
           echo "CACHE_NAME=$CACHE_NAME" >>$GITHUB_ENV
-          CACHE_URL=$(curl -sL https://api.github.com/repos/$GITHUB_REPOSITORY/releases | awk -F '"' '/download_url/{print $4}' | grep $CACHE_NAME) || true
-          [ "$CACHE_URL" ] || echo "REBUILD_TOOLCHAIN=true" >>$GITHUB_OUTPUT
+          RELEASE_ID=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TOOLCHAIN_TAG" --jq '.id' 2>/dev/null) || RELEASE_ID=""
+          FOUND=""
+          if [ -n "$RELEASE_ID" ]; then
+            FOUND=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" --jq '.[].name' | grep -Fx "$CACHE_NAME.tzst" || true)
+          fi
+          if [ -n "$FOUND" ]; then
+            echo "✅ 工具链缓存已存在：$CACHE_NAME.tzst"
+          else
+            echo "REBUILD_TOOLCHAIN=true" >>$GITHUB_OUTPUT
+          fi
 
       - name: Install Feeds
         if: steps.hash.outputs.REBUILD_TOOLCHAIN == 'true'
@@ -87,13 +100,34 @@ jobs:
 
       - name: Delete Old Toolchain
         if: steps.toolchain.conclusion == 'success'
-        uses: mknejp/delete-release-assets@v1
-        with:
-          token: ${{github.token}}
-          tag: ${{env.TOOLCHAIN_TAG}}
-          assets: '${{env.SOURCE_REPO}}-${{env.LITE_BRANCH}}-${{env.DEVICE_TARGET}}*'
-          fail-if-no-assets: false
-          fail-if-no-release: false
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          RELEASE_ID=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TOOLCHAIN_TAG" --jq '.id' 2>/dev/null) || RELEASE_ID=""
+          if [ -z "$RELEASE_ID" ]; then
+            echo "尚无 release，跳过清理"
+            exit 0
+          fi
+          PREFIX="$SOURCE_REPO-$LITE_BRANCH-$DEVICE_TARGET"
+          echo "清理前缀：$PREFIX"
+          ids=()
+          page=1
+          while :; do
+            json=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100&page=$page")
+            n=$(jq 'length' <<<"$json")
+            if [ "$n" -eq 0 ]; then break; fi
+            while read -r id; do
+              if [ -n "$id" ]; then ids+=("$id"); fi
+            done < <(jq -r --arg p "$PREFIX" '.[] | select(.name | startswith($p)) | .id' <<<"$json")
+            if [ "$n" -lt 100 ]; then break; fi
+            page=$((page + 1))
+          done
+          echo "匹配到 ${#ids[@]} 个历史工具链"
+          for id in "${ids[@]}"; do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$id" >/dev/null 2>&1 || echo "跳过（已不存在）：$id"
+          done
+          echo "✅ 已删除 ${#ids[@]} 个历史工具链"
 
       - name: Upload Toolchain To Release
         if: steps.toolchain.conclusion == 'success'
