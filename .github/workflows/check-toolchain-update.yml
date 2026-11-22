@@ -3,8 +3,7 @@ name: check toolchain update
 on:
   workflow_dispatch:
   schedule:
-    - cron: '18 22 * * *'  # 北京时间每天22:18（错峰，避开整点高负载窗口）
-      timezone: 'Asia/Shanghai'
+    - cron: 1 20 * * *  # UTC 每天20:01 = 北京时间次日04:01（错峰，避开整点高负载窗口）
 
 jobs:
   check:
