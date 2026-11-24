@@ -3,7 +3,7 @@ name: check toolchain update
 on:
   workflow_dispatch:
   schedule:
-    - cron: 1 0 * * *  # 北京时间每天00:01（错峰，避开整点高负载窗口）
+    - cron: 31 18 * * *  # 北京时间每天18:31计划，反向提前5.5h抵消调度延迟，预期实际约00:01
       timezone: 'Asia/Shanghai'
 
 jobs:
